@@ -106,7 +106,7 @@ struct UnresolvedSource {
 #define RESOLVE_INTERVAL_UNIT 7
 #define MIN_RESOLVE_INTERVAL 2
 #define MAX_RESOLVE_INTERVAL 9
-#define MIN_REPLACEMENT_INTERVAL 8
+#define MAX_REPLACEMENT_INTERVAL 9
 
 static struct UnresolvedSource *unresolved_sources = NULL;
 static int resolving_interval = 0;
@@ -1006,11 +1006,11 @@ resolve_source_replacement(SourceRecord *record, int refreshment)
 void
 NSR_HandleBadSource(IPAddr *address)
 {
-  static struct timespec last_replacement;
-  struct timespec now;
+  static double next_replacement = 0.0;
   SourceRecord *record;
   IPAddr ip_addr;
-  double diff;
+  uint32_t rnd;
+  double now;
   int slot;
 
   if (!find_slot(address, &slot))
@@ -1025,13 +1025,15 @@ NSR_HandleBadSource(IPAddr *address)
     return;
 
   /* Don't resolve names too frequently */
-  SCH_GetLastEventTime(NULL, NULL, &now);
-  diff = UTI_DiffTimespecsToDouble(&now, &last_replacement);
-  if (fabs(diff) < RESOLVE_INTERVAL_UNIT * (1 << MIN_REPLACEMENT_INTERVAL)) {
+  now = SCH_GetLastEventMonoTime();
+  if (now < next_replacement) {
     DEBUG_LOG("replacement postponed");
     return;
   }
-  last_replacement = now;
+
+  UTI_GetRandomBytes(&rnd, sizeof (rnd));
+  next_replacement = now + ((double)rnd / (uint32_t)-1) *
+                     (RESOLVE_INTERVAL_UNIT * (1 << MAX_REPLACEMENT_INTERVAL));
 
   resolve_source_replacement(record, 0);
 }
