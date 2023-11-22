@@ -268,9 +268,9 @@ static int
 set_socket_flags(int sock_fd, int flags)
 {
   /* Close the socket automatically on exec */
-  if (
+  if (!SCK_IsReusable(sock_fd) &&
 #ifdef SOCK_CLOEXEC
-      (SCK_IsReusable(sock_fd) || (supported_socket_flags & SOCK_CLOEXEC) == 0) &&
+      (supported_socket_flags & SOCK_CLOEXEC) == 0 &&
 #endif
       !UTI_FdSetCloexec(sock_fd))
     return 0;
@@ -1295,6 +1295,8 @@ SCK_PreInitialise(void)
 void
 SCK_Initialise(int family)
 {
+  int fd;
+
   ip4_enabled = family == IPADDR_INET4 || family == IPADDR_UNSPEC;
 #ifdef FEAT_IPV6
   ip6_enabled = family == IPADDR_INET6 || family == IPADDR_UNSPEC;
@@ -1323,6 +1325,9 @@ SCK_Initialise(int family)
     supported_socket_flags |= SOCK_NONBLOCK;
 #endif
 
+  for (fd = first_reusable_fd; fd < first_reusable_fd + reusable_fds; fd++)
+    UTI_FdSetCloexec(fd);
+
   initialised = 1;
 }
 
@@ -1331,16 +1336,11 @@ SCK_Initialise(int family)
 void
 SCK_Finalise(void)
 {
-  int fd;
-
   ARR_DestroyInstance(recv_sck_messages);
   ARR_DestroyInstance(recv_headers);
   ARR_DestroyInstance(recv_messages);
 
-  for (fd = first_reusable_fd; fd < first_reusable_fd + reusable_fds; fd++)
-    close(fd);
-  reusable_fds = 0;
-  first_reusable_fd = 0;
+  SCK_CloseReusableSockets();
 
   initialised = 0;
 }
@@ -1486,6 +1486,19 @@ int
 SCK_IsReusable(int fd)
 {
   return fd >= first_reusable_fd && fd < first_reusable_fd + reusable_fds;
+}
+
+/* ================================================== */
+
+void
+SCK_CloseReusableSockets(void)
+{
+  int fd;
+
+  for (fd = first_reusable_fd; fd < first_reusable_fd + reusable_fds; fd++)
+    close(fd);
+  reusable_fds = 0;
+  first_reusable_fd = 0;
 }
 
 /* ================================================== */
