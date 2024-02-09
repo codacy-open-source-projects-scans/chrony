@@ -962,6 +962,8 @@ process_cmd_add_source(CMD_Request *msg, char *line)
            REQ_ADDSRC_EF_EXP_MONO_ROOT : 0) |
           (data.params.ext_fields & NTP_EF_FLAG_EXP_NET_CORRECTION ?
            REQ_ADDSRC_EF_EXP_NET_CORRECTION : 0) |
+          (data.family == IPADDR_INET4 ? REQ_ADDSRC_IPV4 : 0) |
+          (data.family == IPADDR_INET6 ? REQ_ADDSRC_IPV6 : 0) |
           convert_addsrc_sel_options(data.params.sel_options));
       msg->data.ntp_source.filter_length = htonl(data.params.filter_length);
       msg->data.ntp_source.cert_set = htonl(data.params.cert_set);
@@ -2329,7 +2331,7 @@ process_cmd_ntpdata(char *line)
 
     request.command = htons(REQ_NTP_DATA);
     UTI_IPHostToNetwork(&remote_addr, &request.data.ntp_data.ip_addr);
-    if (!request_reply(&request, &reply, RPY_NTP_DATA, 0))
+    if (!request_reply(&request, &reply, RPY_NTP_DATA2, 0))
       return 0;
 
     UTI_IPNetworkToHost(&reply.data.ntp_data.remote_addr, &remote_addr);
@@ -2365,7 +2367,11 @@ process_cmd_ntpdata(char *line)
                  "Total TX        : %U\n"
                  "Total RX        : %U\n"
                  "Total valid RX  : %U\n"
-                 "Total good RX   : %U\n",
+                 "Total good RX   : %U\n"
+                 "Total kernel TX : %U\n"
+                 "Total kernel RX : %U\n"
+                 "Total HW TX     : %U\n"
+                 "Total HW RX     : %U\n",
                  UTI_IPToString(&remote_addr), UTI_IPToRefid(&remote_addr),
                  ntohs(reply.data.ntp_data.remote_port),
                  UTI_IPToString(&local_addr), UTI_IPToRefid(&local_addr),
@@ -2393,6 +2399,10 @@ process_cmd_ntpdata(char *line)
                  ntohl(reply.data.ntp_data.total_rx_count),
                  ntohl(reply.data.ntp_data.total_valid_count),
                  ntohl(reply.data.ntp_data.total_good_count),
+                 ntohl(reply.data.ntp_data.total_kernel_tx_ts),
+                 ntohl(reply.data.ntp_data.total_kernel_rx_ts),
+                 ntohl(reply.data.ntp_data.total_hw_tx_ts),
+                 ntohl(reply.data.ntp_data.total_hw_rx_ts),
                  REPORT_END);
   }
 

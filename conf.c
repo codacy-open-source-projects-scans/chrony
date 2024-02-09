@@ -249,6 +249,9 @@ static REF_LeapMode leapsec_mode = REF_LeapModeSystem;
 /* Name of a system timezone containing leap seconds occuring at midnight */
 static char *leapsec_tz = NULL;
 
+/* File name of leap seconds list, usually /usr/share/zoneinfo/leap-seconds.list */
+static char *leapsec_list = NULL;
+
 /* Name of the user to which will be dropped root privileges. */
 static char *user;
 
@@ -471,6 +474,7 @@ CNF_Finalise(void)
   Free(hwclock_file);
   Free(keys_file);
   Free(leapsec_tz);
+  Free(leapsec_list);
   Free(logdir);
   Free(bind_ntp_iface);
   Free(bind_acq_iface);
@@ -620,6 +624,8 @@ CNF_ParseLine(const char *filename, int number, char *line)
     parse_leapsecmode(p);
   } else if (!strcasecmp(command, "leapsectz")) {
     parse_string(p, &leapsec_tz);
+  } else if (!strcasecmp(command, "leapseclist")) {
+    parse_string(p, &leapsec_list);
   } else if (!strcasecmp(command, "local")) {
     parse_local(p);
   } else if (!strcasecmp(command, "lock_all")) {
@@ -1664,6 +1670,8 @@ compare_sources(const void *a, const void *b)
     return d;
   if ((d = (int)sa->pool - (int)sb->pool) != 0)
     return d;
+  if ((d = (int)sa->params.family - (int)sb->params.family) != 0)
+    return d;
   if ((d = (int)sa->params.port - (int)sb->params.port) != 0)
     return d;
   return memcmp(&sa->params.params, &sb->params.params, sizeof (sa->params.params));
@@ -1728,8 +1736,9 @@ reload_source_dirs(void)
       /* Add new sources */
       if (pass == 1 && d > 0) {
         source = &new_sources[j];
-        s = NSR_AddSourceByName(source->params.name, source->params.port, source->pool,
-                                source->type, &source->params.params, &new_ids[j]);
+        s = NSR_AddSourceByName(source->params.name, source->params.family, source->params.port,
+                                source->pool, source->type, &source->params.params,
+                                &new_ids[j]);
 
         if (s == NSR_UnresolvedName) {
           unresolved++;
@@ -1842,8 +1851,8 @@ CNF_AddSources(void)
   for (i = 0; i < ARR_GetSize(ntp_sources); i++) {
     source = (NTP_Source *)ARR_GetElement(ntp_sources, i);
 
-    s = NSR_AddSourceByName(source->params.name, source->params.port, source->pool,
-                            source->type, &source->params.params, NULL);
+    s = NSR_AddSourceByName(source->params.name, source->params.family, source->params.port,
+                            source->pool, source->type, &source->params.params, NULL);
     if (s != NSR_Success && s != NSR_UnresolvedName)
       LOG(LOGS_ERR, "Could not add source %s", source->params.name);
 
@@ -2382,6 +2391,14 @@ char *
 CNF_GetLeapSecTimezone(void)
 {
   return leapsec_tz;
+}
+
+/* ================================================== */
+
+char *
+CNF_GetLeapSecList(void)
+{
+  return leapsec_list;
 }
 
 /* ================================================== */
