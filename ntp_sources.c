@@ -638,13 +638,16 @@ name_resolve_handler(DNS_Status status, int n_addrs, IPAddr *ip_addrs, void *any
   next = us->next;
 
   /* Don't repeat the resolving if it (permanently) failed, it was a
-     replacement of a real address, or all addresses are already resolved */
-  if (status == DNS_Failure || UTI_IsIPReal(&us->address.ip_addr) || is_resolved(us))
+     replacement of a real address, a refreshment, or all addresses are
+     already resolved */
+  if (status == DNS_Failure || UTI_IsIPReal(&us->address.ip_addr) ||
+      us->refreshment || is_resolved(us))
     remove_unresolved_source(us);
 
   /* If a restart was requested and this was the last source in the list,
      start with the first source again (if there still is one) */
   if (!next && resolving_restart) {
+    DEBUG_LOG("Restarting");
     next = unresolved_sources;
     resolving_restart = 0;
   }
@@ -709,11 +712,15 @@ static void
 append_unresolved_source(struct UnresolvedSource *us)
 {
   struct UnresolvedSource **i;
+  int n;
 
-  for (i = &unresolved_sources; *i; i = &(*i)->next)
+  for (i = &unresolved_sources, n = 0; *i; i = &(*i)->next, n++)
     ;
   *i = us;
   us->next = NULL;
+
+  DEBUG_LOG("Added unresolved source #%d pool_id=%d random=%d refresh=%d",
+            n + 1, us->pool_id, us->random_order, us->refreshment);
 }
 
 /* ================================================== */
@@ -1049,7 +1056,10 @@ resolve_source_replacement(SourceRecord *record, int refreshment)
   us->address = *record->remote_addr;
 
   append_unresolved_source(us);
-  NSR_ResolveSources();
+
+  /* Don't restart resolving round if already running */
+  if (!resolving_source)
+    NSR_ResolveSources();
 }
 
 /* ================================================== */
