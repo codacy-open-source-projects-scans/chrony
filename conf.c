@@ -79,7 +79,7 @@ static void parse_maxchange(char *);
 static void parse_ntsserver(char *, ARR_Instance files);
 static void parse_ntstrustedcerts(char *);
 static void parse_ratelimit(char *line, int *enabled, int *interval,
-                            int *burst, int *leak, int *kod);
+                            int *burst, int *leak);
 static void parse_refclock(char *);
 static void parse_smoothtime(char *);
 static void parse_source(char *line, char *type, int fatal);
@@ -129,7 +129,6 @@ static int enable_local=0;
 static int local_stratum;
 static int local_orphan;
 static double local_distance;
-static double local_activate;
 
 /* Threshold (in seconds) - if absolute value of initial error is less
    than this, slew instead of stepping */
@@ -221,7 +220,6 @@ static int ntp_ratelimit_enabled = 0;
 static int ntp_ratelimit_interval = 3;
 static int ntp_ratelimit_burst = 8;
 static int ntp_ratelimit_leak = 2;
-static int ntp_ratelimit_kod = 0;
 static int nts_ratelimit_enabled = 0;
 static int nts_ratelimit_interval = 6;
 static int nts_ratelimit_burst = 8;
@@ -593,7 +591,7 @@ CNF_ParseLine(const char *filename, int number, char *line)
     parse_int(p, &cmd_port);
   } else if (!strcasecmp(command, "cmdratelimit")) {
     parse_ratelimit(p, &cmd_ratelimit_enabled, &cmd_ratelimit_interval,
-                    &cmd_ratelimit_burst, &cmd_ratelimit_leak, NULL);
+                    &cmd_ratelimit_burst, &cmd_ratelimit_leak);
   } else if (!strcasecmp(command, "combinelimit")) {
     parse_double(p, &combine_limit);
   } else if (!strcasecmp(command, "confdir")) {
@@ -680,7 +678,7 @@ CNF_ParseLine(const char *filename, int number, char *line)
     parse_string(p, &ntp_signd_socket);
   } else if (!strcasecmp(command, "ntsratelimit")) {
     parse_ratelimit(p, &nts_ratelimit_enabled, &nts_ratelimit_interval,
-                    &nts_ratelimit_burst, &nts_ratelimit_leak, NULL);
+                    &nts_ratelimit_burst, &nts_ratelimit_leak);
   } else if (!strcasecmp(command, "ntscachedir") ||
              !strcasecmp(command, "ntsdumpdir")) {
     parse_string(p, &nts_dump_dir);
@@ -712,7 +710,7 @@ CNF_ParseLine(const char *filename, int number, char *line)
     parse_int(p, &ptp_port);
   } else if (!strcasecmp(command, "ratelimit")) {
     parse_ratelimit(p, &ntp_ratelimit_enabled, &ntp_ratelimit_interval,
-                    &ntp_ratelimit_burst, &ntp_ratelimit_leak, &ntp_ratelimit_kod);
+                    &ntp_ratelimit_burst, &ntp_ratelimit_leak);
   } else if (!strcasecmp(command, "refclock")) {
     parse_refclock(p);
   } else if (!strcasecmp(command, "refresh")) {
@@ -850,7 +848,7 @@ parse_sourcedir(char *line)
 /* ================================================== */
 
 static void
-parse_ratelimit(char *line, int *enabled, int *interval, int *burst, int *leak, int *kod)
+parse_ratelimit(char *line, int *enabled, int *interval, int *burst, int *leak)
 {
   int n, val;
   char *opt;
@@ -871,8 +869,6 @@ parse_ratelimit(char *line, int *enabled, int *interval, int *burst, int *leak, 
       *burst = val;
     else if (!strcasecmp(opt, "leak"))
       *leak = val;
-    else if (!strcasecmp(opt, "kod") && kod)
-      *kod = val;
     else
       command_parse_error();
   }
@@ -1070,7 +1066,7 @@ parse_log(char *line)
 static void
 parse_local(char *line)
 {
-  if (!CPS_ParseLocal(line, &local_stratum, &local_orphan, &local_distance, &local_activate))
+  if (!CPS_ParseLocal(line, &local_stratum, &local_orphan, &local_distance))
     command_parse_error();
   enable_local = 1;
 }
@@ -2170,13 +2166,12 @@ CNF_GetCommandPort(void) {
 /* ================================================== */
 
 int
-CNF_AllowLocalReference(int *stratum, int *orphan, double *distance, double *activate)
+CNF_AllowLocalReference(int *stratum, int *orphan, double *distance)
 {
   if (enable_local) {
     *stratum = local_stratum;
     *orphan = local_orphan;
     *distance = local_distance;
-    *activate = local_activate;
     return 1;
   } else {
     return 0;
@@ -2433,12 +2428,11 @@ CNF_GetLockMemory(void)
 
 /* ================================================== */
 
-int CNF_GetNTPRateLimit(int *interval, int *burst, int *leak, int *kod)
+int CNF_GetNTPRateLimit(int *interval, int *burst, int *leak)
 {
   *interval = ntp_ratelimit_interval;
   *burst = ntp_ratelimit_burst;
   *leak = ntp_ratelimit_leak;
-  *kod = ntp_ratelimit_kod;
   return ntp_ratelimit_enabled;
 }
 

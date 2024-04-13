@@ -296,14 +296,13 @@ CPS_ParseAllowDeny(char *line, int *all, IPAddr *ip, int *subnet_bits)
 /* ================================================== */
 
 int
-CPS_ParseLocal(char *line, int *stratum, int *orphan, double *distance, double *activate)
+CPS_ParseLocal(char *line, int *stratum, int *orphan, double *distance)
 {
   int n;
   char *cmd;
 
   *stratum = 10;
   *distance = 1.0;
-  *activate = 0.0;
   *orphan = 0;
 
   while (*line) {
@@ -319,9 +318,6 @@ CPS_ParseLocal(char *line, int *stratum, int *orphan, double *distance, double *
       n = 0;
     } else if (!strcasecmp(cmd, "distance")) {
       if (sscanf(line, "%lf%n", distance, &n) != 1)
-        return 0;
-    } else if (!strcasecmp(cmd, "activate")) {
-      if (sscanf(line, "%lf%n", activate, &n) != 1)
         return 0;
     } else {
       return 0;

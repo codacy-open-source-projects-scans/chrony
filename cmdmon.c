@@ -146,7 +146,6 @@ static const char permissions[] = {
   PERMIT_AUTH, /* DOFFSET2 */
   PERMIT_AUTH, /* MODIFY_SELECTOPTS */
   PERMIT_AUTH, /* MODIFY_OFFSET */
-  PERMIT_AUTH, /* LOCAL3 */
 };
 
 /* ================================================== */
@@ -532,8 +531,7 @@ handle_local(CMD_Request *rx_message, CMD_Reply *tx_message)
   if (ntohl(rx_message->data.local.on_off)) {
     REF_EnableLocal(ntohl(rx_message->data.local.stratum),
                     UTI_FloatNetworkToHost(rx_message->data.local.distance),
-                    ntohl(rx_message->data.local.orphan),
-                    UTI_FloatNetworkToHost(rx_message->data.local.activate));
+                    ntohl(rx_message->data.local.orphan));
   } else {
     REF_DisableLocal();
   }
@@ -1513,10 +1511,9 @@ read_from_cmd_socket(int sock_fd, int event, void *anything)
 
   /* Don't reply to all requests from hosts other than localhost if the rate
      is excessive */
-  if (!localhost && log_index >= 0 &&
-      CLG_LimitServiceRate(CLG_CMDMON, log_index) != CLG_PASS) {
-    DEBUG_LOG("Command packet discarded to limit response rate");
-    return;
+  if (!localhost && log_index >= 0 && CLG_LimitServiceRate(CLG_CMDMON, log_index)) {
+      DEBUG_LOG("Command packet discarded to limit response rate");
+      return;
   }
 
   expected_length = PKL_CommandLength(&rx_message);
@@ -1651,8 +1648,8 @@ read_from_cmd_socket(int sock_fd, int event, void *anything)
         case REQ_SETTIME:
           handle_settime(&rx_message, &tx_message);
           break;
-
-        case REQ_LOCAL3:
+        
+        case REQ_LOCAL2:
           handle_local(&rx_message, &tx_message);
           break;
 

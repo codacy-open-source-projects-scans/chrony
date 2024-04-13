@@ -111,8 +111,7 @@
 #define REQ_DOFFSET2 71
 #define REQ_MODIFY_SELECTOPTS 72
 #define REQ_MODIFY_OFFSET 73
-#define REQ_LOCAL3 74
-#define N_REQUEST_TYPES 75
+#define N_REQUEST_TYPES 74
 
 /* Structure used to exchange timespecs independent of time_t size */
 typedef struct {
@@ -238,8 +237,6 @@ typedef struct {
   int32_t stratum;
   Float distance;
   int32_t orphan;
-  Float activate;
-  uint32_t reserved[2];
   int32_t EOR;
 } REQ_Local;
 
