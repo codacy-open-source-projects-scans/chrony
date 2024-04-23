@@ -108,14 +108,14 @@ extern double CNF_GetReselectDistance(void);
 extern double CNF_GetStratumWeight(void);
 extern double CNF_GetCombineLimit(void);
 
-extern int CNF_AllowLocalReference(int *stratum, int *orphan, double *distance);
+extern int CNF_AllowLocalReference(int *stratum, int *orphan, double *distance, double *activate);
 
 extern void CNF_SetupAccessRestrictions(void);
 
 extern int CNF_GetSchedPriority(void);
 extern int CNF_GetLockMemory(void);
 
-extern int CNF_GetNTPRateLimit(int *interval, int *burst, int *leak);
+extern int CNF_GetNTPRateLimit(int *interval, int *burst, int *leak, int *kod);
 extern int CNF_GetNtsRateLimit(int *interval, int *burst, int *leak);
 extern int CNF_GetCommandRateLimit(int *interval, int *burst, int *leak);
 extern void CNF_GetSmooth(double *max_freq, double *max_wander, int *leap_only);
