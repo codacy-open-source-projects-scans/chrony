@@ -478,7 +478,7 @@ the driver-specific parameter using the *:* character.
 +
 This directive can be used multiple times to specify multiple reference clocks.
 +
-There are four drivers included in *chronyd*:
+There are five drivers included in *chronyd*:
 +
 *PPS*:::
 Driver for the kernel PPS (pulse per second) API. The parameter is the path to
@@ -596,6 +596,23 @@ refclock PHC /dev/ptp1:nocrossts poll 3 pps
 refclock PHC /dev/ptp2:extpps:pin=1 width 0.2 poll 2
 ----
 +
+*RTC*:::
+Driver for using the Real Time Clock (RTC) as a reference clock. The parameter
+is the path to the RTC character device which should be used as a time source.
+This driver cannot be used together with the <<rtcfile,*rtcfile*>> or
+<<rtcsync,*rtcsync*>> directive. The driver supports the following option:
++
+*utc*::::
+Assume that RTC keeps Universal Coordinated Time (UTC) instead of local
+time.
+{blank}:::
++
+Examples:
++
+----
+refclock RTC /dev/rtc0:utc
+----
++
 {blank}::
 The *refclock* directive supports the following options:
 +
@@ -661,14 +678,13 @@ value is the estimated precision of the system clock.
 Maximum allowed dispersion for filtered samples (in seconds). Samples with
 larger estimated dispersion are ignored. By default, this limit is disabled.
 *filter* _samples_:::
-This option sets the length of the median filter which is used to reduce the
-noise in the measurements. With each poll about 40 percent of the stored
-samples are discarded and one final sample is calculated as an average of the
-remaining samples. If the length is 4 or more, at least 4 samples have to be
-collected between polls. For lengths below 4, the filter has to be full. The
-default is 64. With drivers that perform their own polling (PPS, PHC, SHM), the
-maximum value is adjusted to the number of driver polls per source poll, i.e.
-2^(_poll_ - _dpoll_).
+This option sets the maximum number of samples that can be stored in the median
+filter between polls of the source. The filter combines about 60 percent of the
+samples closest to the median offset into one sample. If more samples are
+received by the driver between polls, the oldest samples will be dropped. One
+sample per poll is sufficient for the source to be selectable. The default
+is 64. Note that the PHC driver has additional filtering based on the reading
+delay.
 *prefer*:::
 Prefer this source over other selectable sources without the *prefer* option.
 *noselect*:::
@@ -1137,7 +1153,7 @@ The maximum allowed slew rate can be set by the <<maxslewrate,*maxslewrate*>>
 directive. The current remaining correction is shown in the
 <<chronyc.adoc#tracking,*tracking*>> report as the *System time* value.
 
-[[driftfile]]*driftfile* _file_::
+[[driftfile]]*driftfile* _file_ [*interval* _interval_]::
 One of the main activities of the *chronyd* program is to work out the rate at
 which the system clock gains or loses time relative to real time.
 +
@@ -1155,6 +1171,10 @@ that when the system clock has advanced by a second, it has gained 100
 microseconds in reality (so the true time has only advanced by 999900
 microseconds). The second is an estimate of the error bound around the first
 value in which the true rate actually lies.
++
+The *interval* option specifies the minimum interval between updates of the
+file in seconds. The file is written only on an update of the local clock.
+The default interval is 3600 seconds.
 +
 An example of the driftfile directive is:
 +
@@ -2203,7 +2223,8 @@ The directive takes no arguments. It is equivalent to specifying the *-u*
 switch to the Linux *hwclock* program.
 +
 Note that this setting is overridden by the <<hwclockfile,*hwclockfile*>> file
-and is not relevant for the <<rtcsync,*rtcsync*>> directive.
+and is not relevant for the <<rtcsync,*rtcsync*>> directive or when the RTC
+is used as reference clock.
 
 [[rtcsync]]*rtcsync*::
 The *rtcsync* directive enables a mode where the system time is periodically
