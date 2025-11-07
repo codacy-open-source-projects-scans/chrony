@@ -29,6 +29,12 @@
 
 #include "sysincl.h"
 
+#if defined(HAVE_NETTLE_MEMEQL)
+#include <nettle/memops.h>
+#elif defined(HAVE_GNUTLS)
+#include <gnutls/gnutls.h>
+#endif
+
 #include "logging.h"
 #include "memory.h"
 #include "util.h"
@@ -539,12 +545,14 @@ UTI_CompareIPs(const IPAddr *a, const IPAddr *b, const IPAddr *mask)
 char *
 UTI_IPSockAddrToString(const IPSockAddr *sa)
 {
-  char *result;
+  char buf[BUFFER_LENGTH], *result;
+
+  /* Copy to a separate buffer to avoid a compiler warning */
+  snprintf(buf, sizeof (buf), "%s", UTI_IPToString(&sa->ip_addr));
 
   result = NEXT_BUFFER;
   snprintf(result, BUFFER_LENGTH,
-           sa->ip_addr.family != IPADDR_INET6 ? "%s:%hu" : "[%s]:%hu",
-           UTI_IPToString(&sa->ip_addr), sa->port);
+           sa->ip_addr.family != IPADDR_INET6 ? "%s:%hu" : "[%s]:%hu", buf, sa->port);
 
   return result;
 }
@@ -1195,7 +1203,7 @@ create_dir(char *p, mode_t mode, uid_t uid, gid_t gid)
   }
 
   /* Set its owner */
-  if (chown(p, uid, gid) < 0) {
+  if (lchown(p, uid, gid) < 0) {
     LOG(LOGS_ERR, "Could not change ownership of %s : %s", p, strerror(errno));
     /* Don't leave it there with incorrect ownership */
     rmdir(p);
@@ -1358,6 +1366,7 @@ FILE *
 UTI_OpenFile(const char *basedir, const char *name, const char *suffix,
              char mode, mode_t perm)
 {
+  uint64_t attempts = 0, warn_attempts = 100;
   const char *file_mode;
   char path[PATH_MAX];
   LOG_Severity severity;
@@ -1401,6 +1410,12 @@ try_again:
         return NULL;
       }
       DEBUG_LOG("Removed %s", path);
+
+      if (++attempts == warn_attempts) {
+        LOG(LOGS_WARN, "Failing to replace %s (%"PRIu64" attempts)", path, attempts);
+        warn_attempts *= 10;
+      }
+
       goto try_again;
     }
     LOG(severity, "Could not open %s : %s", path, strerror(errno));
@@ -1647,4 +1662,23 @@ UTI_SplitString(char *string, char **words, int max_saved_words)
   }
 
   return i;
+}
+
+/* ================================================== */
+
+int
+UTI_IsMemoryEqual(const void *s1, const void *s2, unsigned int len)
+{
+#if defined(HAVE_NETTLE_MEMEQL)
+  return nettle_memeql_sec(s1, s2, len);
+#elif defined(HAVE_GNUTLS)
+  return gnutls_memcmp(s1, s2, len) == 0;
+#else
+  unsigned int i, x;
+
+  for (i = 0, x = 0; i < len; i++)
+    x |= ((const unsigned char *)s1)[i] ^ ((const unsigned char *)s2)[i];
+
+  return x == 0;
+#endif
 }

@@ -3,7 +3,7 @@
 
  **********************************************************************
  * Copyright (C) Richard P. Curnow  1997-2003
- * Copyright (C) Miroslav Lichvar  2011-2016, 2018, 2020-2024
+ * Copyright (C) Miroslav Lichvar  2011-2016, 2018, 2020-2025
  * 
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -54,7 +54,6 @@ static int initialised = 0;
 /* ================================================== */
 /* Structure used to hold info for selecting between sources */
 struct SelectInfo {
-  int select_ok;
   double std_dev;
   double root_distance;
   double lo_limit;
@@ -66,10 +65,11 @@ struct SelectInfo {
 /* This enum contains the flag values that are used to label
    each source */
 typedef enum {
-  SRC_OK,               /* OK so far, not a final status! */
+  SRC_OK = 0,           /* OK so far, not a final status! */
   SRC_UNSELECTABLE,     /* Has noselect option set */
   SRC_BAD_STATS,        /* Doesn't have valid stats data */
   SRC_UNSYNCHRONISED,   /* Provides samples, but not synchronised */
+  SRC_BAD_STRATUM,      /* Has stratum outside of allowed range */
   SRC_BAD_DISTANCE,     /* Has root distance longer than allowed maximum */
   SRC_JITTERY,          /* Had std dev larger than allowed maximum */
   SRC_WAITS_STATS,      /* Others have bad stats, selection postponed */
@@ -106,13 +106,20 @@ struct SRC_Instance_Record {
   /* Number of set bits in the reachability register */
   int reachability_size;
 
-  /* Updates since last reference update */
+  /* Number of reachability updates with cleared register */
+  int unreachable_run;
+
+  /* Maximum number of reachability updates with cleared register to still
+     allow selection */
+  int max_unreachable_run;
+
+  /* Number of selection updates since last reference update */
   int updates;
 
-  /* Updates left before allowing combining */
+  /* Number of selection updates left before allowing combining again */
   int distant;
 
-  /* Updates with a status requiring source replacement */
+  /* Number of selection updates with a status requiring source replacement */
   int bad;
 
   /* Flag indicating the status of the source */
@@ -144,9 +151,9 @@ struct SRC_Instance_Record {
   /* Flag indicating the source has a leap second vote */
   int leap_vote;
 
-  /* Flag indicating the source was already reported as
-     a falseticker since the last selection change */
-  int reported_falseticker;
+  /* Flags indicating which status was already reported for
+     the source since the last change of the system peer */
+  char reported_status[SRC_SELECTED + 1];
 };
 
 /* ================================================== */
@@ -191,6 +198,8 @@ static int forced_first_report;   /* Flag to allow one failed selection to be
 
 static double max_distance;
 static double max_jitter;
+static int max_stratum;
+static int min_stratum;
 static double reselect_distance;
 static double stratum_weight;
 static double combine_limit;
@@ -206,8 +215,7 @@ static LOG_FileID logfileid;
 /* Forward prototype */
 
 static void update_sel_options(void);
-static void unselect_selected_source(LOG_Severity severity, const char *format,
-                                     const char *arg);
+static void unselect_selected_source(LOG_Severity severity, const char *format, ...);
 static void slew_sources(struct timespec *raw, struct timespec *cooked, double dfreq,
                          double doffset, LCL_ChangeType change_type, void *anything);
 static void add_dispersion(double dispersion, void *anything);
@@ -225,6 +233,8 @@ void SRC_Initialise(void) {
   selected_source_index = INVALID_SOURCE;
   max_distance = CNF_GetMaxDistance();
   max_jitter = CNF_GetMaxJitter();
+  max_stratum = CNF_GetMaxStratum();
+  min_stratum = CNF_GetMinStratum();
   reselect_distance = CNF_GetReselectDistance();
   stratum_weight = CNF_GetStratumWeight();
   combine_limit = CNF_GetCombineLimit();
@@ -260,7 +270,8 @@ void SRC_Finalise(void)
 
 SRC_Instance SRC_CreateNewInstance(uint32_t ref_id, SRC_Type type, int authenticated,
                                    int sel_options, IPAddr *addr, int min_samples,
-                                   int max_samples, double min_delay, double asymmetry)
+                                   int max_samples, double min_delay, double asymmetry,
+                                   int max_unreach)
 {
   SRC_Instance result;
 
@@ -296,6 +307,7 @@ SRC_Instance SRC_CreateNewInstance(uint32_t ref_id, SRC_Type type, int authentic
   result->authenticated = authenticated;
   result->conf_sel_options = sel_options;
   result->sel_options = sel_options;
+  result->max_unreachable_run = max_unreach;
   result->active = 0;
 
   SRC_SetRefid(result, ref_id, addr);
@@ -322,9 +334,8 @@ void SRC_DestroyInstance(SRC_Instance instance)
     last_updated_inst = NULL;
 
   assert(initialised);
-  if (instance->index < 0 || instance->index >= n_sources ||
-      instance != sources[instance->index])
-    assert(0);
+  BRIEF_ASSERT(instance->index >= 0 && instance->index < n_sources &&
+               instance == sources[instance->index]);
 
   SST_DeleteInstance(instance->stats);
   dead_index = instance->index;
@@ -340,7 +351,7 @@ void SRC_DestroyInstance(SRC_Instance instance)
   if (selected_source_index > dead_index)
     --selected_source_index;
   else if (selected_source_index == dead_index)
-    unselect_selected_source(LOGS_INFO, NULL, NULL);
+    unselect_selected_source(LOGS_INFO, NULL);
 
   SRC_SelectSource(NULL);
 }
@@ -353,6 +364,7 @@ SRC_ResetInstance(SRC_Instance instance)
   instance->updates = 0;
   instance->reachability = 0;
   instance->reachability_size = 0;
+  instance->unreachable_run = 0;
   instance->distant = 0;
   instance->bad = 0;
   instance->status = SRC_BAD_STATS;
@@ -360,8 +372,8 @@ SRC_ResetInstance(SRC_Instance instance)
   instance->stratum = 0;
   instance->leap = LEAP_Unsynchronised;
   instance->leap_vote = 0;
-  instance->reported_falseticker = 0;
 
+  memset(instance->reported_status, 0, sizeof (instance->reported_status));
   memset(&instance->sel_info, 0, sizeof (instance->sel_info));
 
   SST_ResetInstance(instance->stats);
@@ -526,6 +538,13 @@ SRC_UpdateReachability(SRC_Instance inst, int reachable)
   if (inst->reachability_size < SOURCE_REACH_BITS)
       inst->reachability_size++;
 
+  if (inst->reachability == 0) {
+    if (inst->unreachable_run < INT_MAX)
+      inst->unreachable_run++;
+  } else {
+    inst->unreachable_run = 0;
+  }
+
   /* Check if special reference update mode failed */
   if (REF_GetMode() != REF_ModeNormal && special_mode_end()) {
     REF_SetUnsynchronised();
@@ -547,6 +566,7 @@ SRC_ResetReachability(SRC_Instance inst)
 {
   inst->reachability = 0;
   inst->reachability_size = 0;
+  inst->unreachable_run = 0;
   SRC_UpdateReachability(inst, 0);
 }
 
@@ -620,20 +640,45 @@ update_sel_options(void)
 
 /* ================================================== */
 
+FORMAT_ATTRIBUTE_PRINTF(2, 3)
 static void
-log_selection_message(LOG_Severity severity, const char *format, const char *arg)
+log_selection_message(LOG_Severity severity, const char *format, ...)
 {
+  char buf[256];
+  va_list ap;
+
   if (REF_GetMode() != REF_ModeNormal)
     return;
-  LOG(severity, format, arg);
+
+  va_start(ap, format);
+  vsnprintf(buf, sizeof (buf), format, ap);
+  va_end(ap);
+
+  LOG(severity, "%s", buf);
 }
 
 /* ================================================== */
 
+FORMAT_ATTRIBUTE_PRINTF(3, 4)
 static void
-log_selection_source(LOG_Severity severity, const char *format, SRC_Instance inst)
+log_selection_source(LOG_Severity severity, SRC_Instance inst, const char *format, ...)
 {
-  char buf[320], *name, *ntp_name;
+  char buf[320], buf2[256], *name, *ntp_name, *s;
+  va_list ap;
+
+  if (REF_GetMode() != REF_ModeNormal)
+    return;
+
+  va_start(ap, format);
+  vsnprintf(buf2, sizeof (buf2), format, ap);
+  va_end(ap);
+
+  /* Replace ## with %s in the formatted string to be the source name */
+  s = strstr(buf2, "##");
+  if (!s || strchr(buf2, '%'))
+    return;
+  s[0] = '%';
+  s[1] = 's';
 
   name = source_to_string(inst);
   ntp_name = inst->type == SRC_NTP ? NSR_GetName(inst->ip_addr) : NULL;
@@ -643,7 +688,9 @@ log_selection_source(LOG_Severity severity, const char *format, SRC_Instance ins
   else
     snprintf(buf, sizeof (buf), "%s", name);
 
-  log_selection_message(severity, format, buf);
+  LOG(severity, buf2, buf);
+
+  inst->reported_status[inst->status] = 1;
 }
 
 /* ================================================== */
@@ -686,7 +733,7 @@ source_to_string(SRC_Instance inst)
 /* ================================================== */
 
 static void
-mark_source(SRC_Instance inst, SRC_Status status)
+set_source_status(SRC_Instance inst, SRC_Status status)
 {
   struct timespec now;
 
@@ -696,7 +743,8 @@ mark_source(SRC_Instance inst, SRC_Status status)
      distance or jitter larger than the allowed maximums */
   if (inst == last_updated_inst) {
     if (inst->bad < INT_MAX &&
-        (status == SRC_FALSETICKER || status == SRC_BAD_DISTANCE || status == SRC_JITTERY))
+        (status == SRC_FALSETICKER || status == SRC_BAD_DISTANCE ||
+         status == SRC_BAD_STRATUM || status == SRC_JITTERY))
       inst->bad++;
     else
       inst->bad = 0;
@@ -732,6 +780,51 @@ mark_source(SRC_Instance inst, SRC_Status status)
 /* ================================================== */
 
 static void
+mark_source(SRC_Instance inst, SRC_Status status)
+{
+  set_source_status(inst, status);
+
+  BRIEF_ASSERT(status >= SRC_OK && status < sizeof (inst->reported_status));
+
+  if (!inst->reported_status[status]) {
+    switch (status) {
+      case SRC_BAD_STRATUM:
+        if (inst->bad < BAD_HANDLE_THRESHOLD)
+          break;
+        log_selection_source(LOGS_WARN, inst,
+                             "Stratum of ## %sstratum of %d",
+                             inst->stratum < min_stratum ? "below min" : "above max",
+                             inst->stratum < min_stratum ? min_stratum : max_stratum);
+        break;
+      case SRC_BAD_DISTANCE:
+        if (inst->bad < BAD_HANDLE_THRESHOLD)
+          break;
+        log_selection_source(LOGS_WARN, inst,
+                             "Root distance of ## exceeds maxdistance of %.3f seconds",
+                             max_distance);
+        break;
+      case SRC_JITTERY:
+        if (inst->bad < BAD_HANDLE_THRESHOLD)
+          break;
+        log_selection_source(LOGS_WARN, inst,
+                             "Jitter of ## exceeds maxjitter of %.3f seconds",
+                             max_jitter);
+        break;
+      case SRC_FALSETICKER:
+        log_selection_source(LOGS_WARN, inst, "Detected falseticker ##");
+        break;
+      case SRC_SELECTED:
+        log_selection_source(LOGS_INFO, inst, "Selected source ##");
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+/* ================================================== */
+
+static void
 mark_ok_sources(SRC_Status status)
 {
   int i;
@@ -739,7 +832,8 @@ mark_ok_sources(SRC_Status status)
   for (i = 0; i < n_sources; i++) {
     if (sources[i]->status != SRC_OK)
       continue;
-    mark_source(sources[i], status);
+    /* Don't log the status in this case (multiple sources at once) */
+    set_source_status(sources[i], status);
   }
 }
 
@@ -749,16 +843,24 @@ mark_ok_sources(SRC_Status status)
    call providing a message or selection of another source, which resets the
    report_selection_loss flag. */
 
+FORMAT_ATTRIBUTE_PRINTF(2, 3)
 static void
-unselect_selected_source(LOG_Severity severity, const char *format, const char *arg)
+unselect_selected_source(LOG_Severity severity, const char *format, ...)
 {
+  char buf[256];
+  va_list ap;
+
   if (selected_source_index != INVALID_SOURCE) {
     selected_source_index = INVALID_SOURCE;
     report_selection_loss = 1;
   }
 
   if (report_selection_loss && format) {
-    log_selection_message(severity, format, arg);
+    va_start(ap, format);
+    vsnprintf(buf, sizeof (buf), format, ap);
+    va_end(ap);
+
+    log_selection_message(severity, "%s", buf);
     report_selection_loss = 0;
   }
 }
@@ -864,9 +966,9 @@ SRC_SelectSource(SRC_Instance updated_inst)
   struct timespec now, ref_time;
   int i, j, j1, j2, index, sel_prefer, n_endpoints, n_sel_sources, sel_req_source;
   int max_badstat_reach, max_badstat_reach_size, n_badstats_sources;
-  int max_sel_reach, max_sel_reach_size;
+  int max_sel_reach, max_sel_reach_size, n_unreach_sources;
   int depth, best_depth, trust_depth, best_trust_depth, n_sel_trust_sources;
-  int combined, stratum, min_stratum, max_score_index;
+  int combined, stratum, min_sel_stratum, max_score_index;
   int orphan_stratum, orphan_source;
   double src_offset, src_offset_sd, src_frequency, src_frequency_sd, src_skew;
   double src_root_delay, src_root_dispersion;
@@ -881,7 +983,7 @@ SRC_SelectSource(SRC_Instance updated_inst)
   }
 
   if (n_sources == 0) {
-    unselect_selected_source(LOGS_INFO, "Can't synchronise: no sources", NULL);
+    unselect_selected_source(LOGS_WARN, "Can't synchronise: no sources");
     return;
   }
 
@@ -893,6 +995,7 @@ SRC_SelectSource(SRC_Instance updated_inst)
   n_endpoints = 0;
   n_sel_sources = n_sel_trust_sources = 0;
   n_badstats_sources = 0;
+  n_unreach_sources = 0;
   sel_req_source = 0;
   max_sel_reach = max_badstat_reach = 0;
   max_sel_reach_size = max_badstat_reach_size = 0;
@@ -915,13 +1018,15 @@ SRC_SelectSource(SRC_Instance updated_inst)
       continue;
     }
 
-    si = &sources[i]->sel_info;
-    SST_GetSelectionData(sources[i]->stats, &now,
-                         &si->lo_limit, &si->hi_limit, &si->root_distance,
-                         &si->std_dev, &first_sample_ago,
-                         &si->last_sample_ago, &si->select_ok);
+    /* Count unreachable sources for a warning message */
+    if (sources[i]->reachability == 0)
+      n_unreach_sources++;
 
-    if (!si->select_ok) {
+    si = &sources[i]->sel_info;
+
+    if (!SST_GetSelectionData(sources[i]->stats, &now, &si->lo_limit, &si->hi_limit,
+                              &si->root_distance, &si->std_dev, &first_sample_ago,
+                              &si->last_sample_ago)) {
       ++n_badstats_sources;
       mark_source(sources[i], SRC_BAD_STATS);
       if (max_badstat_reach < sources[i]->reachability)
@@ -934,6 +1039,12 @@ SRC_SelectSource(SRC_Instance updated_inst)
     /* Ignore sources which are not synchronised */
     if (sources[i]->leap == LEAP_Unsynchronised) {
       mark_source(sources[i], SRC_UNSYNCHRONISED);
+      continue;
+    }
+
+    /* Require the stratum to be in the allowed range */
+    if (sources[i]->stratum < min_stratum || sources[i]->stratum > max_stratum) {
+      mark_source(sources[i], SRC_BAD_STRATUM);
       continue;
     }
 
@@ -983,8 +1094,11 @@ SRC_SelectSource(SRC_Instance updated_inst)
 
     /* Reachability is not a requirement for selection.  An unreachable source
        can still be selected if its newest sample is not older than the oldest
-       sample from reachable sources. */
-    if (!sources[i]->reachability && max_reach_sample_ago < si->last_sample_ago) {
+       sample from reachable sources and the number of consecutive unreachable
+       updates does not exceed the configured maximum. */
+    if (sources[i]->reachability == 0 &&
+        (si->last_sample_ago > max_reach_sample_ago ||
+         sources[i]->unreachable_run > sources[i]->max_unreachable_run)) {
       mark_source(sources[i], SRC_STALE);
       continue;
     }
@@ -1068,7 +1182,7 @@ SRC_SelectSource(SRC_Instance updated_inst)
   if (n_badstats_sources && n_sel_sources && selected_source_index == INVALID_SOURCE &&
       max_sel_reach_size < SOURCE_REACH_BITS && max_sel_reach >> 1 == max_badstat_reach) {
     mark_ok_sources(SRC_WAITS_STATS);
-    unselect_selected_source(LOGS_INFO, NULL, NULL);
+    unselect_selected_source(LOGS_INFO, NULL);
     return;
   }
 
@@ -1082,7 +1196,8 @@ SRC_SelectSource(SRC_Instance updated_inst)
 
   if (n_endpoints == 0) {
     /* No sources provided valid endpoints */
-    unselect_selected_source(LOGS_INFO, "Can't synchronise: no selectable sources", NULL);
+    unselect_selected_source(LOGS_WARN, "Can't synchronise: no selectable sources"
+                                        " (%d unreachable sources)", n_unreach_sources);
     return;
   }
 
@@ -1156,12 +1271,23 @@ SRC_SelectSource(SRC_Instance updated_inst)
   assert(depth == 0 && trust_depth == 0);
   assert(2 * n_sel_sources == n_endpoints);
 
-  if ((best_trust_depth == 0 && best_depth <= n_sel_sources / 2) ||
-      (best_trust_depth > 0 && best_trust_depth <= n_sel_trust_sources / 2)) {
+  if (best_trust_depth > 0) {
+    best_depth = best_trust_depth;
+    n_sel_sources = n_sel_trust_sources;
+  }
+
+  if (best_depth <= n_sel_sources / 2) {
     /* Could not even get half the reachable (trusted) sources to agree */
 
     if (!reported_no_majority) {
-      log_selection_message(LOGS_WARN, "Can't synchronise: no majority", NULL);
+      if (best_depth < 2)
+        log_selection_message(LOGS_WARN, "%s (no agreement among %d %ssources)",
+                              "Can't synchronise: no majority", n_sel_sources,
+                              best_trust_depth > 0 ? "trusted " : "");
+      else
+        log_selection_message(LOGS_WARN, "%s (only %d of %d %ssources agree)",
+                              "Can't synchronise: no majority", best_depth,
+                              n_sel_sources, best_trust_depth > 0 ? "trusted " : "");
       reported_no_majority = 1;
       report_selection_loss = 0;
     }
@@ -1212,15 +1338,11 @@ SRC_SelectSource(SRC_Instance updated_inst)
         sel_req_source = 0;
     } else {
       mark_source(sources[i], SRC_FALSETICKER);
-      if (!sources[i]->reported_falseticker) {
-        log_selection_source(LOGS_WARN, "Detected falseticker %s", sources[i]);
-        sources[i]->reported_falseticker = 1;
-      }
     }
   }
 
   if (!n_sel_sources || sel_req_source || n_sel_sources < CNF_GetMinSources()) {
-    unselect_selected_source(LOGS_INFO, "Can't synchronise: %s selectable sources",
+    unselect_selected_source(LOGS_WARN, "Can't synchronise: %s selectable sources",
                              !n_sel_sources ? "no" :
                              sel_req_source ? "no required source in" : "not enough");
     mark_ok_sources(SRC_WAITS_SOURCES);
@@ -1259,12 +1381,12 @@ SRC_SelectSource(SRC_Instance updated_inst)
   /* Find minimum stratum */
 
   index = sel_sources[0];
-  min_stratum = sources[index]->stratum;
+  min_sel_stratum = sources[index]->stratum;
   for (i = 1; i < n_sel_sources; i++) {
     index = sel_sources[i];
     stratum = sources[index]->stratum;
-    if (stratum < min_stratum)
-      min_stratum = stratum;
+    if (min_sel_stratum > stratum)
+      min_sel_stratum = stratum;
   }
 
   /* Update scores and find the source with maximum score */
@@ -1275,7 +1397,7 @@ SRC_SelectSource(SRC_Instance updated_inst)
 
   if (selected_source_index != INVALID_SOURCE)
     sel_src_distance = sources[selected_source_index]->sel_info.root_distance +
-      (sources[selected_source_index]->stratum - min_stratum) * stratum_weight;
+      (sources[selected_source_index]->stratum - min_sel_stratum) * stratum_weight;
 
   for (i = 0; i < n_sources; i++) {
     /* Reset score for non-selectable sources */
@@ -1287,7 +1409,7 @@ SRC_SelectSource(SRC_Instance updated_inst)
     }
 
     distance = sources[i]->sel_info.root_distance +
-      (sources[i]->stratum - min_stratum) * stratum_weight;
+      (sources[i]->stratum - min_sel_stratum) * stratum_weight;
     if (sources[i]->type == SRC_NTP)
       distance += reselect_distance;
 
@@ -1329,19 +1451,18 @@ SRC_SelectSource(SRC_Instance updated_inst)
     /* Before selecting the new synchronisation source wait until the reference
        can be updated */
     if (sources[max_score_index]->updates == 0) {
-      unselect_selected_source(LOGS_INFO, NULL, NULL);
+      unselect_selected_source(LOGS_INFO, NULL);
       mark_ok_sources(SRC_WAITS_UPDATE);
       return;
     }
 
     selected_source_index = max_score_index;
-    log_selection_source(LOGS_INFO, "Selected source %s", sources[selected_source_index]);
 
     /* New source has been selected, reset all scores */
     for (i = 0; i < n_sources; i++) {
       sources[i]->sel_score = 1.0;
       sources[i]->distant = 0;
-      sources[i]->reported_falseticker = 0;
+      memset(sources[i]->reported_status, 0, sizeof (sources[i]->reported_status));
     }
 
     reported_no_majority = 0;
@@ -1813,6 +1934,8 @@ get_status_char(SRC_Status status)
       return 'M';
     case SRC_UNSYNCHRONISED:
       return 's';
+    case SRC_BAD_STRATUM:
+      return 'r';
     case SRC_BAD_DISTANCE:
       return 'd';
     case SRC_JITTERY:

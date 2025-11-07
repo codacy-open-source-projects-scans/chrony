@@ -58,9 +58,7 @@ static int refrtc_add_sample(RCL_Instance instance, struct timespec *now,
   rtc_ts.tv_sec = rtc_sec;
   rtc_ts.tv_nsec = rtc_nsec;
 
-  RCL_UpdateReachability(instance);
-
-  status = RCL_AddSample(instance, now, &rtc_ts, LEAP_Normal);
+  status = RCL_AddSample(instance, now, &rtc_ts, LEAP_Normal, 1);
 
   return status;
 }
@@ -138,12 +136,15 @@ static void refrtc_finalise(RCL_Instance instance)
 
   rtc = RCL_GetDriverData(instance);
 
-  if (!rtc->polling) {
-    SCH_RemoveFileHandler(rtc->fd);
-    RTC_Linux_SwitchInterrupt(rtc->fd, 0);
+  if (rtc->fd >= 0) {
+    if (!rtc->polling) {
+      SCH_RemoveFileHandler(rtc->fd);
+      RTC_Linux_SwitchInterrupt(rtc->fd, 0);
+    }
+
+    close(rtc->fd);
   }
 
-  close(rtc->fd);
   Free(rtc);
 }
 

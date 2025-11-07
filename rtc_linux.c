@@ -4,6 +4,7 @@
  **********************************************************************
  * Copyright (C) Richard P. Curnow  1997-2003
  * Copyright (C) Miroslav Lichvar  2012-2014
+ * Copyright (C) Ahmad Fatoum, Pengutronix  2024
  * 
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -359,13 +360,13 @@ t_from_rtc(struct rtc_time *rtc_raw, int utc)
   time_t t1, t2;
 
   /* Convert to seconds since 1970 */
+  memset(&rtc_tm, 0, sizeof (rtc_tm));
   rtc_tm.tm_sec = rtc_raw->tm_sec;
   rtc_tm.tm_min = rtc_raw->tm_min;
   rtc_tm.tm_hour = rtc_raw->tm_hour;
   rtc_tm.tm_mday = rtc_raw->tm_mday;
   rtc_tm.tm_mon = rtc_raw->tm_mon;
   rtc_tm.tm_year = rtc_raw->tm_year;
-  rtc_tm.tm_wday = 0;
 
   temp1 = rtc_tm;
   temp1.tm_isdst = 0;

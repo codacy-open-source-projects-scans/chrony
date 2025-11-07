@@ -124,13 +124,13 @@ get_list_leap(time_t when, int *tai_offset)
   /* leap-seconds.list timestamps are relative to 1 Jan 1900, 00:00:00 */
   when1900 = (int64_t)when + LEAP_SEC_LIST_OFFSET;
 
-  while (fgets(line, sizeof line, f) > 0) {
+  while (fgets(line, sizeof line, f)) {
     int64_t lsl_when;
     int lsl_tai_offset;
     char *p;
 
     /* Ignore blank lines */
-    for (p = line; *p && isspace(*p); ++p)
+    for (p = line; *p && isspace((unsigned char)*p); ++p)
       ;
     if (!*p)
       continue;

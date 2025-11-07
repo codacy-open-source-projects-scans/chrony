@@ -114,7 +114,7 @@ limit=1
 for chronyc_conf in \
 	"accheck 1.2.3.4" \
 	"add peer 10.0.0.0 minpoll 2 maxpoll 6" \
-	"add server 10.0.0.0 minpoll 6 maxpoll 10 iburst burst key 1 certset 2 maxdelay 1e-3 maxdelayratio 10.0 maxdelaydevratio 10.0 maxdelayquant 0.5 mindelay 1e-4 asymmetry 0.5 offset 1e-5 minsamples 6 maxsamples 6 filter 3 offline auto_offline prefer noselect trust require xleave polltarget 20 port 123 presend 7 minstratum 3 version 4 nts ntsport 4460 copy extfield F323 extfield F324 ipv6 ipv4" \
+	"add server 10.0.0.0 minpoll 6 maxpoll 10 iburst burst key 1 certset 2 maxdelay 1e-3 maxdelayratio 10.0 maxdelaydevratio 10.0 maxdelayquant 0.5 mindelay 1e-4 asymmetry 0.5 offset 1e-5 minsamples 6 maxsamples 6 maxunreach 8 filter 3 offline auto_offline prefer noselect trust require xleave polltarget 20 port 123 presend 7 minstratum 3 version 4 nts ntsport 4460 copy extfield F323 extfield F324 ipv6 ipv4" \
 	"add server node1.net1.clk" \
 	"allow 1.2.3.4" \
 	"allow 1.2" \
@@ -145,7 +145,7 @@ for chronyc_conf in \
 	"dfreq 1.0e-3" \
 	"doffset -1.0" \
 	"dump" \
-	"local stratum 5 distance 1.0 activate 0.5 orphan" \
+	"local stratum 5 distance 1.0 activate 0.5 orphan waitsynced 100 waitunsynced 20" \
 	"local off" \
 	"makestep 10.0 3" \
 	"makestep" \
@@ -195,6 +195,38 @@ do
 	check_chronyc_output "501 Not authorised$" || test_fail
 done
 
+for chronyc_conf in \
+	"activity" \
+	"authdata" \
+	"clients" \
+	"manual list" \
+	"ntpdata" \
+	"rtcdata" \
+	"selectdata" \
+	"serverstats" \
+	"smoothing" \
+	"sourcename 192.168.123.1" \
+	"sources" \
+	"sourcestats" \
+	"tracking"
+do
+	server_conf="opencommands ${chronyc_conf% *}"
+	run_test || test_fail
+	check_chronyd_exit || test_fail
+	check_chronyc_output "501 Not authorised$" && test_fail
+
+	server_conf="opencommands"
+	run_test || test_fail
+	check_chronyd_exit || test_fail
+	check_chronyc_output "501 Not authorised$" || test_fail
+
+	server_conf="cmddeny 192.168.123.2"
+	run_test || test_fail
+	check_chronyd_exit || test_fail
+	check_chronyc_output "506 Cannot talk to daemon$" || test_fail
+done
+
+server_conf="server 192.168.123.1"
 cmdmon_unix=1
 
 chronyc_conf="
@@ -242,14 +274,14 @@ Jitter asymmetry: \+0\.00
 NTP tests       : 111 111 1110
 Interleaved     : No
 Authenticated   : No
-TX timestamping : Kernel
-RX timestamping : Kernel
+TX timestamping : (Daemon|Kernel)
+RX timestamping : (Daemon|Kernel)
 Total TX        : 1
 Total RX        : 1
 Total valid RX  : 1
 Total good RX   : 0
 Total kernel TX : [01]
-Total kernel RX : 1
+Total kernel RX : [01]
 Total HW TX     : 0
 Total HW RX     : 0
 S Name/IP Address        Auth COpts EOpts Last Score     Interval  Leap
@@ -266,9 +298,9 @@ Authenticated NTP packets  : 0
 Interleaved NTP packets    : 0
 NTP timestamps held        : 0
 NTP timestamp span         : 0
-NTP daemon RX timestamps   : 0
+NTP daemon RX timestamps   : [01]
 NTP daemon TX timestamps   : 1
-NTP kernel RX timestamps   : 1
+NTP kernel RX timestamps   : [01]
 NTP kernel TX timestamps   : 0
 NTP hardware RX timestamps : 0
 NTP hardware TX timestamps : 0$" || test_fail
@@ -392,7 +424,7 @@ cyclelogs
 dump
 dfreq 1.0e-3
 doffset -0.01
-local stratum 5 distance 1.0 orphan
+local stratum 5 distance 1.0 orphan waitsynced 100 waitunsynced 10
 local off
 makestep 10.0 3
 makestep

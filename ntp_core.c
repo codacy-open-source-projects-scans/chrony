@@ -686,7 +686,8 @@ NCR_CreateInstance(NTP_Remote_Address *remote_addr, NTP_Source_Type type,
                                          SRC_NTP, NAU_IsAuthEnabled(result->auth),
                                          params->sel_options, &result->remote_addr.ip_addr,
                                          params->min_samples, params->max_samples,
-                                         params->min_delay, params->asymmetry);
+                                         params->min_delay, params->asymmetry,
+                                         params->max_unreach);
 
   if (params->max_delay_quant > 0.0) {
     int k = round(CLAMP(0.05, params->max_delay_quant, 0.95) * DELAY_QUANT_Q);
@@ -1960,7 +1961,7 @@ process_response(NCR_Instance inst, int saved, NTP_Local_Address *local_addr,
   /* The skew and estimated frequency offset relative to the remote source */
   double skew, source_freq_lo, source_freq_hi;
 
-  /* RFC 5905 packet tests */
+  /* RFC 5905 and RFC 9769 packet tests */
   int test1, test2n, test2i, test2, test3, test5, test6, test7;
   int interleaved_packet, valid_packet, synced_packet;
 
@@ -2024,7 +2025,7 @@ process_response(NCR_Instance inst, int saved, NTP_Local_Address *local_addr,
     pkt_root_dispersion = UTI_Ntp32ToDouble(message->root_dispersion);
   }
 
-  /* Check if the packet is valid per RFC 5905, section 8.
+  /* Check if the packet is valid per RFC 5905 (section 8) and RFC 9769.
      The test values are 1 when passed and 0 when failed. */
   
   /* Test 1 checks for duplicate packet */
@@ -2337,9 +2338,8 @@ process_response(NCR_Instance inst, int saved, NTP_Local_Address *local_addr,
     inst->valid_rx = 1;
   }
 
-  if ((unsigned int)local_receive.source >= sizeof (tss_chars) ||
-      (unsigned int)local_transmit.source >= sizeof (tss_chars))
-    assert(0);
+  BRIEF_ASSERT((unsigned int)local_receive.source < sizeof (tss_chars) &&
+               (unsigned int)local_transmit.source < sizeof (tss_chars));
 
   DEBUG_LOG("NTP packet lvm=%o stratum=%d poll=%d prec=%d root_delay=%.9f root_disp=%.9f refid=%"PRIx32" [%s]",
             message->lvm, message->stratum, message->poll, message->precision,

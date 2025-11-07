@@ -27,7 +27,7 @@ TEST_PRIVDROP_USER=${TEST_PRIVDROP_USER:-nobody}
 test_start() {
 	local user=$(get_user)
 
-	check_chronyd_features NTP CMDMON || test_skip "NTP/CMDMON support disabled"
+	check_chronyd_features CMDMON || test_skip "CMDMON support disabled"
 
 	[ "${#TEST_DIR}" -ge 5 ] || test_skip "invalid TEST_DIR"
 
@@ -213,12 +213,15 @@ generate_chrony_conf() {
 
 	user=$(get_user)
 	ntpport=$(get_free_port)
-	cmdport=$(get_free_port)
+	while true; do
+		cmdport=$(get_free_port)
+		[ "$ntpport" -ne "$cmdport" ] && break
+	done
 
 	echo "0.0 10000" > "$TEST_LIBDIR/driftfile"
 	echo "1 MD5 abcdefghijklmnopq" > "$TEST_DIR/keys"
-	chown "$user:$(id -g "$user")" "$TEST_LIBDIR/driftfile" "$TEST_DIR/keys"
 	echo "0.0" > "$TEST_DIR/tempcomp"
+	chown "$user:$(id -g "$user")" "$TEST_LIBDIR/driftfile" "$TEST_DIR"/{keys,tempcomp}
 
 	(
 		echo "pidfile $(get_pidfile)"
@@ -390,7 +393,7 @@ run_chronyc() {
 	fi
 
 	$CHRONYC_WRAPPER $wrapper_options \
-		"$chronyc" -h "$host" $options "$@" > "$TEST_DIR/chronyc.out" && \
+		"$chronyc" -h "$host" -u "$(get_user)" $options "$@" > "$TEST_DIR/chronyc.out" && \
 			test_ok || test_error
 	[ $? -ne 0 ] && ret=1
 

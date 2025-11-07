@@ -39,6 +39,7 @@ default_refclock_jitter=""
 default_refclock_offset=0.0
 
 default_update_interval=0
+default_update_executable=""
 default_shift_pll=2
 
 default_server_strata=1
@@ -78,6 +79,7 @@ default_max_sync_time=210
 default_client_min_mean_out_interval=0.0
 default_client_max_min_out_interval=inf
 
+default_ip_family=4
 default_cmdmon_unix=1
 default_pcap_dumps=0
 default_dns=0
@@ -91,8 +93,6 @@ done
 test_start() {
 	rm -rf tmp/*
 	echo "Testing $@:"
-
-	check_config_h 'FEAT_NTP 1' || test_skip
 }
 
 test_pass() {
@@ -192,6 +192,8 @@ get_node_name() {
 
 	if [ $dns -ne 0 ]; then
 		echo "node$index.net1.clk"
+	elif [ $ip_family -eq 6 ]; then
+		printf "fc00::123:%x" $index
 	else
 		echo "192.168.123.$index"
 	fi
@@ -462,7 +464,9 @@ run_simulation() {
 		-o tmp/log.offset -f tmp/log.freq -p tmp/log.packets \
 		-R $(awk "BEGIN {print $update_interval < 0 ? 2^-($update_interval) : 1}") \
 		-r $(awk "BEGIN {print $max_sync_time * 2^$update_interval}") \
-		-l $(awk "BEGIN {print $limit * 2^$update_interval}") && test_ok || test_error
+		-l $(awk "BEGIN {print $limit * 2^$update_interval}") \
+		$([ "$update_executable" != "" ] && printf "%s" "-e $update_executable") && \
+			test_ok || test_error
 }
 
 run_test() {
@@ -474,6 +478,7 @@ run_test() {
 	nodes=$(get_chronyd_nodes)
 	[ -n "$chronyc_conf" ] && nodes=$[$nodes + $clients]
 
+	export CLKNETSIM_IP_FAMILY=$ip_family
 	export CLKNETSIM_UNIX_SUBNET=$[$cmdmon_unix != 0 ? 2 : 0]
 
 	for i in $(seq 1 $nodes); do

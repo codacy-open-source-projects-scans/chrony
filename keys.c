@@ -265,9 +265,6 @@ KEY_Reload(void)
     if (get_key(i - 1)->id == get_key(i)->id)
       LOG(LOGS_WARN, "Detected duplicate key %"PRIu32, get_key(i - 1)->id);
   }
-
-  /* Erase any passwords from stack */
-  memset(line, 0, sizeof (line));
 }
 
 /* ================================================== */
@@ -405,7 +402,7 @@ check_auth(Key *key, const void *data, int data_len,
 
   hash_len = generate_auth(key, data, data_len, buf, sizeof (buf));
 
-  return MIN(hash_len, trunc_len) == auth_len && !memcmp(buf, auth, auth_len);
+  return MIN(hash_len, trunc_len) == auth_len && UTI_IsMemoryEqual(buf, auth, auth_len);
 }
 
 /* ================================================== */

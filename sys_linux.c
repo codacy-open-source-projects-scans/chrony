@@ -5,6 +5,7 @@
  * Copyright (C) Richard P. Curnow  1997-2003
  * Copyright (C) John G. Hasler  2009
  * Copyright (C) Miroslav Lichvar  2009-2012, 2014-2018
+ * Copyright (C) Shachar Raindel  2025
  * 
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -38,6 +39,12 @@
 #include <poll.h>
 #endif
 
+#ifdef HAVE_LINUX_TIMESTAMPING
+#include <linux/sockios.h>
+#include <linux/ethtool.h>
+#include <net/if.h>
+#endif
+
 #ifdef FEAT_SCFILTER
 #include <sys/prctl.h>
 #include <seccomp.h>
@@ -48,9 +55,6 @@
 #ifdef FEAT_RTC
 #include <linux/rtc.h>
 #endif
-#ifdef HAVE_LINUX_TIMESTAMPING
-#include <linux/sockios.h>
-#endif
 #endif
 
 #ifdef FEAT_PRIVDROP
@@ -59,11 +63,13 @@
 #endif
 
 #include "sys_linux.h"
+#include "sys_linux_scmp.h"
 #include "sys_timex.h"
 #include "conf.h"
 #include "local.h"
 #include "logging.h"
 #include "privops.h"
+#include "socket.h"
 #include "util.h"
 
 /* Frequency scale to convert from ppm to the timex freq */
@@ -90,9 +96,6 @@ static int max_tick_bias;
 /* The kernel USER_HZ constant */
 static int hz;
 static double dhz; /* And dbl prec version of same for arithmetic */
-
-/* Flag indicating whether adjtimex() can step the clock */
-static int have_setoffset;
 
 /* The assumed rate at which the effective frequency and tick values are
    updated in the kernel */
@@ -293,28 +296,16 @@ get_version_specific_details(void)
   get_kernel_version(&major, &minor, &patch);
   DEBUG_LOG("Linux kernel major=%d minor=%d patch=%d", major, minor, patch);
 
-  if (kernelvercmp(major, minor, patch, 2, 2, 0) < 0) {
+  if (kernelvercmp(major, minor, patch, 2, 6, 39) < 0) {
     LOG_FATAL("Kernel version not supported, sorry.");
   }
 
-  if (kernelvercmp(major, minor, patch, 2, 6, 27) >= 0 &&
-      kernelvercmp(major, minor, patch, 2, 6, 33) < 0) {
-    /* In tickless kernels before 2.6.33 the frequency is updated in
-       a half-second interval */
-    tick_update_hz = 2;
-  } else if (kernelvercmp(major, minor, patch, 4, 19, 0) < 0) {
+  if (kernelvercmp(major, minor, patch, 4, 19, 0) < 0) {
     /* In kernels before 4.19 the frequency is updated only on internal ticks
        (CONFIG_HZ).  As their rate cannot be reliably detected from the user
        space, and it may not even be constant (CONFIG_NO_HZ - aka tickless),
        assume the lowest commonly used constant rate */
     tick_update_hz = 100;
-  }
-
-  /* ADJ_SETOFFSET support */
-  if (kernelvercmp(major, minor, patch, 2, 6, 39) < 0) {
-    have_setoffset = 0;
-  } else {
-    have_setoffset = 1;
   }
 
   DEBUG_LOG("hz=%d nominal_tick=%d max_tick_bias=%d tick_update_hz=%d",
@@ -333,34 +324,6 @@ reset_adjtime_offset(void)
   txc.offset = 0;
 
   SYS_Timex_Adjust(&txc, 0);
-}
-
-/* ================================================== */
-
-static int
-test_step_offset(void)
-{
-  struct timex txc;
-
-  /* Zero maxerror and check it's reset to a maximum after ADJ_SETOFFSET.
-     This seems to be the only way how to verify that the kernel really
-     supports the ADJ_SETOFFSET mode as it doesn't return an error on unknown
-     mode. */
-
-  txc.modes = MOD_MAXERROR;
-  txc.maxerror = 0;
-
-  if (SYS_Timex_Adjust(&txc, 1) < 0 || txc.maxerror != 0)
-    return 0;
-
-  txc.modes = ADJ_SETOFFSET | ADJ_NANO;
-  txc.time.tv_sec = 0;
-  txc.time.tv_usec = 0;
-
-  if (SYS_Timex_Adjust(&txc, 1) < 0 || txc.maxerror < 100000)
-    return 0;
-
-  return 1;
 }
 
 /* ================================================== */
@@ -387,15 +350,10 @@ SYS_Linux_Initialise(void)
 
   reset_adjtime_offset();
 
-  if (have_setoffset && !test_step_offset()) {
-    LOG(LOGS_INFO, "adjtimex() doesn't support ADJ_SETOFFSET");
-    have_setoffset = 0;
-  }
-
   SYS_Timex_InitialiseWithFunctions(1.0e6 * max_tick_bias / nominal_tick,
                                     1.0 / tick_update_hz,
                                     read_frequency, set_frequency,
-                                    have_setoffset ? apply_step_offset : NULL,
+                                    apply_step_offset,
                                     0.0, 0.0, NULL, NULL);
 }
 
@@ -771,6 +729,14 @@ SYS_Linux_EnableSystemCallFilter(int level, SYS_ProcessContext context)
                            SCMP_A1(SCMP_CMP_EQ, ioctls[i])) < 0)
         goto add_failed;
     }
+
+    /* Allow selected ioctls that need to be specified in a separate
+       file to avoid conflicting headers (e.g. TCGETS2) */
+    for (i = 0; SYS_Linux_GetExtraScmpIoctl(i) != 0; i++) {
+      if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, SCMP_SYS(ioctl), 1,
+                           SCMP_A1(SCMP_CMP_EQ, SYS_Linux_GetExtraScmpIoctl(i))) < 0)
+        goto add_failed;
+    }
   }
 
   if (seccomp_load(ctx) < 0)
@@ -902,33 +868,99 @@ get_precise_phc_readings(int phc_fd, int max_samples, struct timespec ts[][3])
 
 /* ================================================== */
 
-int
-SYS_Linux_OpenPHC(const char *path, int phc_index)
+/* Make sure an FD is a PHC.  Return the FD if it is, or close the FD
+   and return -1 if it is not. */
+
+static int
+verify_fd_is_phc(int phc_fd)
 {
   struct ptp_clock_caps caps;
-  char phc_path[64];
-  int phc_fd;
 
-  if (!path) {
-    if (snprintf(phc_path, sizeof (phc_path), "/dev/ptp%d", phc_index) >= sizeof (phc_path))
-      return -1;
-    path = phc_path;
-  }
-
-  phc_fd = open(path, O_RDONLY);
-  if (phc_fd < 0) {
-    LOG(LOGS_ERR, "Could not open %s : %s", path, strerror(errno));
-    return -1;
-  }
-
-  /* Make sure it is a PHC */
   if (ioctl(phc_fd, PTP_CLOCK_GETCAPS, &caps)) {
     LOG(LOGS_ERR, "ioctl(%s) failed : %s", "PTP_CLOCK_GETCAPS", strerror(errno));
     close(phc_fd);
     return -1;
   }
 
-  UTI_FdSetCloexec(phc_fd);
+  return phc_fd;
+}
+
+/* ================================================== */
+
+static int
+open_phc_by_iface_name(const char *iface, int flags)
+{
+#ifdef HAVE_LINUX_TIMESTAMPING
+  struct ethtool_ts_info ts_info;
+  char phc_device[PATH_MAX];
+  struct ifreq req;
+  int sock_fd;
+
+  sock_fd = SCK_OpenUdpSocket(NULL, NULL, NULL, 0);
+  if (sock_fd < 0)
+    return -1;
+
+  memset(&req, 0, sizeof (req));
+  memset(&ts_info, 0, sizeof (ts_info));
+
+  if (snprintf(req.ifr_name, sizeof (req.ifr_name), "%s", iface) >=
+      sizeof (req.ifr_name)) {
+    SCK_CloseSocket(sock_fd);
+    return -1;
+  }
+
+  ts_info.cmd = ETHTOOL_GET_TS_INFO;
+  req.ifr_data = (char *)&ts_info;
+
+  if (ioctl(sock_fd, SIOCETHTOOL, &req)) {
+    DEBUG_LOG("ioctl(%s) failed : %s", "SIOCETHTOOL", strerror(errno));
+    SCK_CloseSocket(sock_fd);
+    return -1;
+  }
+
+  /* Simplify failure paths by closing the socket as early as possible */
+  SCK_CloseSocket(sock_fd);
+  sock_fd = -1;
+
+  if (ts_info.phc_index < 0) {
+    DEBUG_LOG("PHC missing on %s", req.ifr_name);
+    return -1;
+  }
+
+  if (snprintf(phc_device, sizeof (phc_device),
+               "/dev/ptp%d", ts_info.phc_index) >= sizeof (phc_device))
+    return -1;
+
+  return open(phc_device, flags);
+#else
+  return -1;
+#endif
+}
+
+/* ================================================== */
+
+int
+SYS_Linux_OpenPHC(const char *device, int flags)
+{
+  int phc_fd = -1;
+
+  if (device[0] == '/') {
+    phc_fd = open(device, flags);
+    if (phc_fd >= 0)
+      phc_fd = verify_fd_is_phc(phc_fd);
+  }
+
+  if (phc_fd < 0) {
+    phc_fd = open_phc_by_iface_name(device, flags);
+    if (phc_fd < 0) {
+      LOG(LOGS_ERR, "Could not open PHC (of) %s", device);
+      return -1;
+    }
+    phc_fd = verify_fd_is_phc(phc_fd);
+  }
+
+  if (phc_fd >= 0)
+    UTI_FdSetCloexec(phc_fd);
 
   return phc_fd;
 }
