@@ -234,6 +234,7 @@ try_libcap=-1
 try_clockctl=0
 feat_scfilter=0
 try_seccomp=-1
+try_pledge=0
 priv_ops=""
 feat_ipv6=1
 feat_phc=1
@@ -445,6 +446,18 @@ case $OPERATINGSYSTEM in
         try_setsched=1
         try_lockmem=1
         add_def NETBSD
+        echo "Configuring for $SYSTEM"
+    ;;
+    OpenBSD)
+        EXTRA_OBJECTS="sys_generic.o sys_openbsd.o sys_posix.o"
+        try_setsched=1
+        try_lockmem=1
+        try_pledge=1
+        add_def OPENBSD
+        if [ $feat_droproot = "1" ]; then
+          add_def FEAT_PRIVDROP
+          priv_ops="ADJUSTTIME ADJUSTFREQ SETTIME"
+        fi
         echo "Configuring for $SYSTEM"
     ;;
     Darwin)
@@ -812,6 +825,12 @@ then
   EXTRA_OBJECTS="$EXTRA_OBJECTS sys_linux_scmp.o"
 fi
 
+if [ $feat_scfilter = "1" ] && [ $try_pledge = "1" ] && \
+  test_code 'pledge()' 'unistd.h' '' '' 'pledge("stdio", NULL);'
+then
+  add_def FEAT_SCFILTER
+fi
+
 if [ "x$priv_ops" != "x" ]; then
   EXTRA_OBJECTS="$EXTRA_OBJECTS privops.o"
   add_def PRIVOPS_HELPER
@@ -892,7 +911,7 @@ HASH_LINK=""
 if [ $feat_sechash = "1" ] && [ "x$HASH_LINK" = "x" ]  && [ $try_nettle = "1" ]; then
   test_cflags="`pkg_config --cflags nettle`"
   test_link="`pkg_config --libs nettle`"
-  if test_code 'nettle' 'nettle/nettle-meta.h nettle/sha2.h' \
+  if test_code 'nettle' 'nettle/nettle-meta.h nettle/sha2.h nettle/version.h' \
     "$test_cflags" "$test_link" \
     'return nettle_hashes[0]->context_size;'
   then
